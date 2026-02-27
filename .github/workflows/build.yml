@@ -42,34 +42,14 @@ jobs:
           - goarch: 386
             goos: dragonfly
         include:
-          - { goos: linux,   goarch: arm,    goarm: 7 }
-          - { goos: linux,   goarch: arm,    goarm: 6 }
-          - { goos: linux,   goarch: arm,    goarm: 5 }
-          - { goos: android, goarch: arm64 }
-          - { goos: windows, goarch: arm64 }
-          - { goos: windows, goarch: arm,    goarm: 7, allow_fail: true } # windows/arm 计划于 Go 1.26 移除
-          - { goos: linux,   goarch: arm64 }
-          - { goos: linux,   goarch: riscv64 }
-          - { goos: linux,   goarch: loong64 }
-          - { goos: linux,   goarch: mips64 }
-          - { goos: linux,   goarch: mips64le }
-          - { goos: linux,   goarch: mipsle }
-          - { goos: linux,   goarch: mips }
-          - { goos: linux,   goarch: mipsle, gomips: softfloat }
-          - { goos: linux,   goarch: mips,   gomips: softfloat }
-          - { goos: linux,   goarch: ppc64 }
-          - { goos: linux,   goarch: ppc64le }
-          - { goos: freebsd, goarch: arm64 }
-          - { goos: freebsd, goarch: arm,    goarm: 7 }
-          - { goos: linux,   goarch: s390x }
-          - { goos: openbsd, goarch: arm64 }
-          - { goos: openbsd, goarch: arm,    goarm: 7 }
+          - { goos: android, goarch: arm64, cgo: 1 }
     env:
-      CGO_ENABLED: 0
       GOOS:   ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
       GOARM:  ${{ matrix.goarm }}
       GOMIPS: ${{ matrix.gomips }}
+      CGO_ENABLED: ${{ matrix.goos }}
+
     steps:
       - name: Checkout codebase
         uses: actions/checkout@v6
@@ -89,6 +69,18 @@ jobs:
           set -Eeuo pipefail
           go version && go env && echo "Supported targets (dist list):" && go tool dist list | sort -u
 
+    # Install Android NDK for android rows and expose ndk-path output
+      - name: Setup Android NDK
+        if: matrix.goos == 'android'
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          add-to-path: false
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_API: 21
+
       - name: Resolve build metadata
         run: |
           set -Eeuo pipefail
@@ -101,7 +93,11 @@ jobs:
           NAME="nexttrace_${GOOS}_${GOARCH}${ARM_SUFFIX}"
           if [ "${GOOS}" = "windows" ]; then NAME="${NAME}.exe"; fi
           if [ "${GOMIPS:-}" = "softfloat" ]; then NAME="${NAME}_softfloat"; fi
-
+          if [ "$GOOS" = "android" ]; then
+          TOOLCHAIN_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC="$TOOLCHAIN_BIN/aarch64-linux-android${ANDROID_API}-clang"
+          echo "Using Android NDK CC=$CC"
+          fi
           echo "BUILD_VERSION=${BUILD_VERSION}" >> "$GITHUB_ENV"
           echo "BUILD_DATE=${BUILD_DATE}"       >> "$GITHUB_ENV"
           echo "COMMIT_SHA1=${COMMIT_SHA1}"     >> "$GITHUB_ENV"
