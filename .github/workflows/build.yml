@@ -42,7 +42,7 @@ jobs:
           - goarch: 386
             goos: dragonfly
         include:
-          - { goos: android, goarch: arm64, cgo: 1, api: 21 }
+          - { goos: android, goarch: arm64, cgo: 1, android_api: 21 }
           - { goos: linux, goarch: arm64, cgo: 0 }
     env:
       GOOS:   ${{ matrix.goos }}
