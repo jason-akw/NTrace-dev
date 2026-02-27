@@ -42,7 +42,7 @@ jobs:
           - goarch: 386
             goos: dragonfly
         include:
-          - { goos: android, goarch: arm64, cgo: 1 }
+          - { goos: android, goarch: arm64, cgo: 1, api: 21 }
           - { goos: linux, goarch: arm64, cgo: 0 }
     env:
       GOOS:   ${{ matrix.goos }}
@@ -50,6 +50,7 @@ jobs:
       GOARM:  ${{ matrix.goarm }}
       GOMIPS: ${{ matrix.gomips }}
       CGO_ENABLED: ${{ matrix.goos }}
+      ANDROID_API: ${{ matrix.android_api }}
 
     steps:
       - name: Checkout codebase
@@ -80,7 +81,6 @@ jobs:
           add-to-path: false
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          ANDROID_API: 21
 
       - name: Resolve build metadata
         run: |
