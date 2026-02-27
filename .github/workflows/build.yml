@@ -49,7 +49,7 @@ jobs:
       GOARCH: ${{ matrix.goarch }}
       GOARM:  ${{ matrix.goarm }}
       GOMIPS: ${{ matrix.gomips }}
-      CGO_ENABLED: ${{ matrix.goos }}
+      CGO_ENABLED: ${{ matrix.cgo || (matrix.goos == 'android' || matrix.goos == 'darwin') && 1 || 0 }}
       ANDROID_API: ${{ matrix.android_api }}
 
     steps:
@@ -79,8 +79,6 @@ jobs:
         with:
           ndk-version: r26d
           add-to-path: false
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
 
       - name: Resolve build metadata
         run: |
@@ -95,9 +93,10 @@ jobs:
           if [ "${GOOS}" = "windows" ]; then NAME="${NAME}.exe"; fi
           if [ "${GOMIPS:-}" = "softfloat" ]; then NAME="${NAME}_softfloat"; fi
           if [ "$GOOS" = "android" ]; then
-          TOOLCHAIN_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          export CC="$TOOLCHAIN_BIN/aarch64-linux-android${ANDROID_API}-clang"
-          echo "Using Android NDK CC=$CC"
+            TOOLCHAIN_BIN="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+            export CC="$TOOLCHAIN_BIN/aarch64-linux-android${ANDROID_API}-clang"
+            echo "CC=${CC}" >> "$GITHUB_ENV"
+            echo "Using Android NDK CC=$CC"
           fi
           echo "BUILD_VERSION=${BUILD_VERSION}" >> "$GITHUB_ENV"
           echo "BUILD_DATE=${BUILD_DATE}"       >> "$GITHUB_ENV"
