@@ -99,6 +99,9 @@ func runMTRScheduler(
 	if maxHops <= 0 {
 		maxHops = 30
 	}
+	if maxHops > 255 {
+		maxHops = 255
+	}
 	parallelism := cfg.ParallelRequests
 	if parallelism < 1 {
 		parallelism = 1
