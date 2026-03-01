@@ -5,6 +5,8 @@ package internal
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"net"
 	"sync"
 	"syscall"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/nxtrace/NTrace-core/util"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 )
@@ -86,26 +89,32 @@ func ListenPacket(network string, laddr string) (net.PacketConn, error) {
 		isock, err := internetSocket(context.Background(), nw, nil, nil, syscall.SOCK_DGRAM, proto, "listen",
 			func(ctx context.Context, network, address string, c syscall.RawConn) error {
 				if ifIndex != -1 {
+					var sockErr error
 					if proto == syscall.IPPROTO_ICMP {
-						return c.Control(func(fd uintptr) {
-							err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, syscall.IP_BOUND_IF, ifIndex)
-							if err != nil {
-								return
-							}
+						ctrlErr := c.Control(func(fd uintptr) {
+							sockErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, syscall.IP_BOUND_IF, ifIndex)
 						})
+						if ctrlErr != nil {
+							return ctrlErr
+						}
+						return sockErr
 					} else {
-						return c.Control(func(fd uintptr) {
-							err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_BOUND_IF, ifIndex)
-							if err != nil {
-								return
-							}
+						ctrlErr := c.Control(func(fd uintptr) {
+							sockErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_BOUND_IF, ifIndex)
 						})
+						if ctrlErr != nil {
+							return ctrlErr
+						}
+						return sockErr
 					}
 				}
 				return nil
 			})
 		if err != nil {
-			panic(err)
+			if util.EnvDevMode {
+				panic(err)
+			}
+			log.Fatalf("ListenPacket: %v", err)
 		}
 		return newIPConn(isock), nil
 	} else {
@@ -173,7 +182,9 @@ func (s *ICMPSpec) SendICMP(ctx context.Context, ipHdr gopacket.NetworkLayer, ic
 		return time.Time{}, errors.New("SendICMP: expect *layers.ICMPv6 when s.IPVersion==6")
 	}
 
-	_ = ic6.SetNetworkLayerForChecksum(ipHdr)
+	if err := ic6.SetNetworkLayerForChecksum(ipHdr); err != nil {
+		return time.Time{}, fmt.Errorf("SetNetworkLayerForChecksum: %w", err)
+	}
 
 	buf := gopacket.NewSerializeBuffer()
 	opts := gopacket.SerializeOptions{

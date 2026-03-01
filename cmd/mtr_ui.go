@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"sync/atomic"
@@ -141,6 +142,9 @@ func (u *mtrUI) Enter() {
 	// raw mode
 	if oldState, err := term.MakeRaw(int(os.Stdin.Fd())); err == nil {
 		u.oldState = oldState
+	} else {
+		// TUI 在 cooked mode 下无法正确处理按键，输出警告
+		io.WriteString(os.Stderr, fmt.Sprintf("warning: failed to enable raw mode: %v\n", err))
 	}
 }
 

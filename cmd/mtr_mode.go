@@ -59,6 +59,7 @@ func runMTRTUI(method trace.Method, conf trace.Config, hopIntervalMs int, maxPer
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	go func() {
 		<-sigCh
 		cancel()
@@ -77,6 +78,9 @@ func runMTRTUI(method trace.Method, conf trace.Config, hopIntervalMs int, maxPer
 
 	// 解析源 IP：--source > --dev 推导 > udp dial fallback
 	srcHost, _ := os.Hostname()
+	if srcHost == "" {
+		srcHost = "unknown-host"
+	}
 	srcIP := resolveSrcIP(conf)
 
 	// 语言：默认为 "cn"
@@ -130,6 +134,7 @@ func runMTRReport(method trace.Method, conf trace.Config, hopIntervalMs int, max
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	go func() {
 		<-sigCh
 		cancel()
@@ -192,6 +197,7 @@ func runMTRRaw(method trace.Method, conf trace.Config, hopIntervalMs int, maxPer
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	go func() {
 		<-sigCh
 		cancel()

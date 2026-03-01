@@ -694,7 +694,9 @@ func (e *mtrICMPEngine) sendProbe(ctx context.Context, ttl, seq int) (time.Time,
 	icmpHdr := &layers.ICMPv6{
 		TypeCode: layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoRequest, 0),
 	}
-	_ = icmpHdr.SetNetworkLayerForChecksum(ipHdr)
+	if err := icmpHdr.SetNetworkLayerForChecksum(ipHdr); err != nil {
+		return time.Time{}, fmt.Errorf("SetNetworkLayerForChecksum: %w", err)
+	}
 	icmpEcho := &layers.ICMPv6Echo{
 		Identifier: uint16(e.echoID),
 		SeqNumber:  uint16(seq),

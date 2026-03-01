@@ -101,6 +101,12 @@ func newWSTraceSession(conn wsConn, lang string, queueSize int) *wsTraceSession 
 
 func (s *wsTraceSession) writeLoop() {
 	defer close(s.writerDone)
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[deploy] writeLoop panic: %v", r)
+			s.closeWithCode(websocket.CloseInternalServerErr, "internal error")
+		}
+	}()
 	for {
 		select {
 		case <-s.stopCh:
@@ -170,6 +176,8 @@ func traceWebsocketHandler(c *gin.Context) {
 		_ = conn.Close()
 	}()
 
+	// 设置首次读取超时，防止恶意客户端无限阻塞
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	_, message, err := conn.ReadMessage()
 	if err != nil {
 		log.Printf("[deploy] websocket read failed: %v", err)

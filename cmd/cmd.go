@@ -506,8 +506,12 @@ func Execute() {
 		domain = parts[2]
 	}
 
-	if strings.Contains(domain, "]") {
-		domain = strings.Split(strings.Split(domain, "]")[0], "[")[1]
+	if strings.Contains(domain, "]") && strings.Contains(domain, "[") {
+		inner := strings.SplitN(domain, "]", 2)[0]
+		parts := strings.SplitN(inner, "[", 2)
+		if len(parts) >= 2 {
+			domain = parts[1]
+		}
 	} else if strings.Contains(domain, ":") {
 		if strings.Count(domain, ":") == 1 {
 			domain = strings.Split(domain, ":")[0]
@@ -634,10 +638,11 @@ func Execute() {
 				if (ipNet.IP.To4() == nil) == (ip.To4() == nil) {
 					*srcAddr = ipNet.IP.String()
 					// 检查是否是内网IP
-					if !(net.ParseIP(*srcAddr).IsPrivate() ||
-						net.ParseIP(*srcAddr).IsLoopback() ||
-						net.ParseIP(*srcAddr).IsLinkLocalUnicast() ||
-						net.ParseIP(*srcAddr).IsLinkLocalMulticast()) {
+					parsed := net.ParseIP(*srcAddr)
+					if parsed != nil && !(parsed.IsPrivate() ||
+						parsed.IsLoopback() ||
+						parsed.IsLinkLocalUnicast() ||
+						parsed.IsLinkLocalMulticast()) {
 						// 若不是则跳出
 						break
 					}
