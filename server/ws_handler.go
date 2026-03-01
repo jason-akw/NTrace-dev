@@ -340,7 +340,7 @@ func runMTRTrace(session *wsTraceSession, setup *traceExecution) {
 			cancel()
 		}
 	})
-	if err != nil && err != context.Canceled {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("[deploy] websocket MTR raw trace failed target=%s error=%v", sanitizeLogParam(setup.Target), err)
 		_ = session.send(wsEnvelope{Type: "error", Error: err.Error(), Status: 500})
 		return

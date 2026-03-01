@@ -473,7 +473,7 @@ func mergeUnknownIntoSingleKnown(accMap map[string]*mtrHopAccum) {
 			break // 多路径，不归并
 		}
 	}
-	if knownCount != 1 {
+	if knownCount != 1 || known == nil {
 		return
 	}
 
@@ -495,6 +495,9 @@ func mergeUnknownIntoSingleKnown(accMap map[string]*mtrHopAccum) {
 		known.geo = unk.geo
 	}
 	for label := range unk.mplsSet {
+		if known.mplsSet == nil {
+			known.mplsSet = make(map[string]struct{})
+		}
 		known.mplsSet[label] = struct{}{}
 	}
 

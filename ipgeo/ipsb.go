@@ -23,6 +23,7 @@ func IPSB(ip string, timeout time.Duration, _ string, _ bool) (*IPGeoData, error
 		log.Println("api.ip.sb 请求超时(2s)，请切换其他API使用")
 		return nil, err
 	}
+	defer content.Body.Close()
 	body, _ := io.ReadAll(content.Body)
 	res := gjson.ParseBytes(body)
 

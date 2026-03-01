@@ -142,7 +142,7 @@ func TestMakePayloadWithTargetChecksum_TooShort(t *testing.T) {
 	dst := net.ParseIP("10.0.0.2").To4()
 	payload := make([]byte, 1) // too short
 	err := MakePayloadWithTargetChecksum(payload, src, dst, 100, 200, 42)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "too short")
 }
 
@@ -151,7 +151,7 @@ func TestMakePayloadWithTargetChecksum_VersionMismatch(t *testing.T) {
 	dst := net.ParseIP("2001:db8::1") // v6
 	payload := make([]byte, 4)
 	err := MakePayloadWithTargetChecksum(payload, src, dst, 100, 200, 42)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mismatch")
 }
 

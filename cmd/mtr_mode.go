@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -107,7 +108,7 @@ func runMTRTUI(method trace.Method, conf trace.Config, hopIntervalMs int, maxPer
 	}
 
 	err := trace.RunMTR(ctx, method, roundConf, opts, onSnapshot)
-	if err != nil && err != context.Canceled {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		// 离开备用屏幕后再打印错误
 		ui.Leave()
 		fmt.Println(err)
@@ -159,7 +160,7 @@ func runMTRReport(method trace.Method, conf trace.Config, hopIntervalMs int, max
 
 	roundConf := normalizeMTRReportConfig(conf, wide)
 	err := trace.RunMTR(ctx, method, roundConf, opts, onSnapshot)
-	if err != nil && err != context.Canceled {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Println(err)
 		return
 	}
@@ -209,7 +210,7 @@ func runMTRRaw(method trace.Method, conf trace.Config, hopIntervalMs int, maxPer
 	err := trace.RunMTRRaw(ctx, method, roundConf, opts, func(rec trace.MTRRawRecord) {
 		fmt.Println(printer.FormatMTRRawLine(rec))
 	})
-	if err != nil && err != context.Canceled {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		writeMTRRawRuntimeError(os.Stderr, err)
 	}
 }

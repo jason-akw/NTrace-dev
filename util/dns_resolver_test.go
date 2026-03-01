@@ -14,7 +14,7 @@ func TestResolverMapping(t *testing.T) {
 	for _, name := range known {
 		r := ResolverForDot(name)
 		if r == nil {
-			t.Errorf("ResolverForDot(%q) returned nil, want non-nil", name)
+			t.Fatalf("ResolverForDot(%q) returned nil, want non-nil", name)
 		}
 		// 确认是自定义 dialer（PreferGo = true 且有 Dial）
 		if !r.PreferGo {

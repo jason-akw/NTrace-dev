@@ -118,6 +118,7 @@ func runMTRPerHop(ctx context.Context, method Method, baseConfig Config, opts MT
 		if err != nil {
 			return fmt.Errorf("mtr: %w", err)
 		}
+		defer engine.close()
 		if err := engine.start(ctx); err != nil {
 			return fmt.Errorf("mtr: %w", err)
 		}
@@ -174,6 +175,7 @@ func runMTRRoundBased(ctx context.Context, method Method, baseConfig Config, opt
 		if err != nil {
 			return fmt.Errorf("mtr: %w", err)
 		}
+		defer engine.close()
 		if err := engine.start(ctx); err != nil {
 			return fmt.Errorf("mtr: %w", err)
 		}
@@ -480,6 +482,7 @@ func (e *mtrICMPEngine) start(ctx context.Context) error {
 func (e *mtrICMPEngine) close() {
 	if e.spec != nil {
 		e.spec.Close()
+		e.spec = nil
 	}
 }
 

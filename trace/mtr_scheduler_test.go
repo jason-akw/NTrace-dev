@@ -150,7 +150,7 @@ func TestScheduler_ContextCancel(t *testing.T) {
 		atomic.AddInt32(&snapshotCalled, 1)
 	}, nil)
 
-	if err != context.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 	if atomic.LoadInt32(&prober.closeCnt) != 1 {
@@ -313,7 +313,7 @@ func TestScheduler_Pause(t *testing.T) {
 		IsPaused:         func() bool { return atomic.LoadInt32(&pauseFlag) == 1 },
 	}, nil, nil)
 
-	if err != context.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
 	// Should have probed at least 2 (before pause) + some more after resume
