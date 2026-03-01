@@ -133,15 +133,29 @@
 
 - 当 `knownFinalTTL` 已确定后，所有 `TTL > knownFinalTTL` 的调度槽位被标记为 `disabled`。
 - disabled TTL 的探测回包（包括在途探测返回的 dst-ip 回复）**一律丢弃**，不折叠、不计入任何统计。
-- **MaxPerHop 上限检查**（`states[originTTL].completed >= MaxPerHop`）：
-  - 在途探测（cap 达到前已发出）返回时亦被丢弃，保证 Snt 严格不超 MaxPerHop。
-  - 被丢弃的探测仍更新 `consecutiveErrs`/`nextAt`，防止调度饥饿。
+- **MaxPerHop 上限检查**（`states[originTTL].completed + inFlightCount >= MaxPerHop`）：
+  - 调度时使用 `completed + inFlightCount >= MaxPerHop` 防止超发。
+  - 完成时仍检查 `completed >= MaxPerHop` 丢弃溢出结果。
 - `originTTL < curFinal` 时（更低 TTL 先到 dst-ip → 降低 `knownFinalTTL`）：
   - 保存 `oldFinal`，更新 `knownFinalTTL = originTTL`，disable 所有 `originTTL+1..maxHops`。
   - 调用 `agg.ClearHop(oldFinal)`：清除旧 finalTTL 的聚合数据（避免幽灵行），**不合并**到新 finalTTL。
   - 新 finalTTL 由独立的 per-hop 调度器自行积累新鲜探测数据，不存在 Snt 膨胀问题。
-- 调度状态（`inFlight`/`nextAt`/`consecutiveErrs`）更新在 `originTTL`。
+- 调度状态（`inFlightCount`/`nextAt`/`consecutiveErrs`）更新在 `originTTL`。
 - 统计聚合（`completed++`/`agg.Update`/`onProbe`）均使用 `originTTL`（不再有 `accountTTL` 分离）。
+
+## MTR Per-Hop 调度器关键设计（当前）
+
+- **多 in-flight 探测**：每 TTL 允许最多 `MaxInFlightPerHop`（默认 3）个并发探测。
+  - `mtrHopState.inFlightCount` 是计数器（非 bool）。
+  - 这解决了高丢包 hop 因超时阻塞导致 Snt 积累速率远低于低丢包 hop 的问题。
+- **nextAt 基于发送时间**：`launchProbe` 时设 `nextAt = now + hopInterval`。
+  - 不再等探测完成才设 nextAt，调度器可在超时探测还在飞行中时为同一 TTL 发射新探测。
+  - 这保证了所有 TTL 的 Snt 积累速率大致相同，不受丢包率影响。
+- **全局并发限制**：`inFlight`（全局计数器）< `parallelism` 仍然有效。
+- **`MaxInFlightPerHop` 配置**：`mtrSchedulerConfig.MaxInFlightPerHop`，默认动态计算。
+  - 动态默认 = `ceil(Timeout / HopInterval) + 1`（至少 1）。
+  - 例：`Timeout=2s, HopInterval=1s` → 默认 3；`Timeout=2s, HopInterval=200ms` → 默认 11。
+  - 用户显式设置 > 0 时优先使用用户值。
 
 ## MTR 引擎关键机制（易踩坑）
 

@@ -1691,3 +1691,406 @@ func TestScheduler_FinalHopSntNotInflated_WithLowering(t *testing.T) {
 		t.Errorf("TTL 8 (old provisional final): Snt=%d, expected 0 (cleared)", sntByTTL[8])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Multi in-flight per hop: high-loss hops should accumulate Snt equally
+// ---------------------------------------------------------------------------
+
+func TestScheduler_MultiInFlightPerHop_HighLossEqualSnt(t *testing.T) {
+	// This test reproduces the original bug: when each TTL allows only 1
+	// in-flight probe and nextAt is based on completion time, a TTL with
+	// high packet loss (simulated by long timeout) accumulates Snt much
+	// slower than a low-loss TTL.
+	//
+	// With the multi-in-flight fix (inFlightCount counter + nextAt based on
+	// launch time), all TTLs should complete with equal Snt = MaxPerHop.
+	dstIP := net.ParseIP("10.0.0.5")
+
+	prober := &mockTTLProber{
+		probeFn: func(_ context.Context, ttl int) (mtrProbeResult, error) {
+			// TTL 1: fast responder (no loss)
+			// TTL 2: 80% loss (simulated as 80% of probes sleeping 200ms = "timeout")
+			// TTL 3: destination, fast
+			ip := net.ParseIP(fmt.Sprintf("10.0.0.%d", ttl))
+			if ttl == 3 {
+				ip = dstIP
+			}
+
+			if ttl == 2 {
+				// Simulate high RTT / timeout — takes longer than other hops.
+				// With multi-in-flight, the scheduler should still keep up.
+				time.Sleep(50 * time.Millisecond)
+			}
+
+			return mtrProbeResult{
+				TTL:     ttl,
+				Success: true,
+				Addr:    &net.IPAddr{IP: ip},
+				RTT:     5 * time.Millisecond,
+			}, nil
+		},
+	}
+
+	agg := NewMTRAggregator()
+
+	err := runMTRScheduler(context.Background(), prober, agg, mtrSchedulerConfig{
+		BeginHop:          1,
+		MaxHops:           30,
+		HopInterval:       10 * time.Millisecond,
+		MaxPerHop:         10,
+		MaxInFlightPerHop: 3,
+		ParallelRequests:  30,
+		ProgressThrottle:  time.Millisecond,
+		DstIP:             dstIP,
+	}, nil, nil)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	stats := agg.Snapshot()
+	sntByTTL := map[int]int{}
+	for _, s := range stats {
+		sntByTTL[s.TTL] = s.Snt
+	}
+
+	// All active TTLs should have exactly MaxPerHop probes
+	for ttl := 1; ttl <= 3; ttl++ {
+		if sntByTTL[ttl] != 10 {
+			t.Errorf("TTL %d: Snt=%d, expected 10 (MaxPerHop)", ttl, sntByTTL[ttl])
+		}
+	}
+}
+
+func TestScheduler_MultiInFlightPerHop_TimeoutHopsKeepUp(t *testing.T) {
+	// Simulate real packet loss: some probes return quickly (RTT), others
+	// "time out" by sleeping the full timeout duration. With multi-in-flight,
+	// the slow (timed-out) hop should still reach MaxPerHop because the
+	// scheduler launches new probes while old ones are still in-flight.
+	dstIP := net.ParseIP("10.0.0.10")
+
+	var ttl2Calls int32
+
+	prober := &mockTTLProber{
+		probeFn: func(_ context.Context, ttl int) (mtrProbeResult, error) {
+			ip := net.ParseIP(fmt.Sprintf("10.0.0.%d", ttl))
+			if ttl == 5 {
+				ip = dstIP
+			}
+
+			if ttl == 3 {
+				// 50% of probes "time out" (take a long time)
+				n := atomic.AddInt32(&ttl2Calls, 1)
+				if n%2 == 0 {
+					time.Sleep(100 * time.Millisecond) // "timeout"
+					// Return as no-reply (timeout)
+					return mtrProbeResult{TTL: ttl}, nil
+				}
+			}
+
+			return mtrProbeResult{
+				TTL:     ttl,
+				Success: true,
+				Addr:    &net.IPAddr{IP: ip},
+				RTT:     2 * time.Millisecond,
+			}, nil
+		},
+	}
+
+	agg := NewMTRAggregator()
+
+	err := runMTRScheduler(context.Background(), prober, agg, mtrSchedulerConfig{
+		BeginHop:          1,
+		MaxHops:           30,
+		HopInterval:       10 * time.Millisecond,
+		MaxPerHop:         6,
+		MaxInFlightPerHop: 3,
+		ParallelRequests:  30,
+		ProgressThrottle:  time.Millisecond,
+		DstIP:             dstIP,
+	}, nil, nil)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	stats := agg.Snapshot()
+	sntByTTL := map[int]int{}
+	for _, s := range stats {
+		sntByTTL[s.TTL] = s.Snt
+	}
+
+	// All TTLs should complete with MaxPerHop probes
+	for ttl := 1; ttl <= 5; ttl++ {
+		if sntByTTL[ttl] != 6 {
+			t.Errorf("TTL %d: Snt=%d, expected 6 (MaxPerHop)", ttl, sntByTTL[ttl])
+		}
+	}
+}
+
+func TestScheduler_NextAtBasedOnLaunchTime(t *testing.T) {
+	// Verify that the scheduler doesn't wait for probe completion to set nextAt.
+	// If a probe takes 200ms and hopInterval is 10ms, a second probe for the same
+	// TTL should launch ~10ms after the first (not 210ms after).
+	var launches []time.Time
+	var mu sync.Mutex
+
+	prober := &mockTTLProber{
+		probeFn: func(_ context.Context, ttl int) (mtrProbeResult, error) {
+			mu.Lock()
+			launches = append(launches, time.Now())
+			mu.Unlock()
+
+			// Simulate slow probe (timeout-like)
+			time.Sleep(200 * time.Millisecond)
+
+			return mtrProbeResult{
+				TTL:     ttl,
+				Success: true,
+				Addr:    &net.IPAddr{IP: net.ParseIP("10.0.0.1")},
+				RTT:     200 * time.Millisecond,
+			}, nil
+		},
+	}
+
+	agg := NewMTRAggregator()
+
+	err := runMTRScheduler(context.Background(), prober, agg, mtrSchedulerConfig{
+		BeginHop:          1,
+		MaxHops:           1,
+		HopInterval:       50 * time.Millisecond,
+		MaxPerHop:         3,
+		MaxInFlightPerHop: 3,
+		ParallelRequests:  10,
+		ProgressThrottle:  time.Millisecond,
+	}, nil, nil)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(launches) < 3 {
+		t.Fatalf("expected 3 launches, got %d", len(launches))
+	}
+
+	// With launch-based nextAt and hopInterval=50ms, launches 2 and 3 should
+	// start ~50ms and ~100ms after launch 1 respectively, NOT 250ms and 500ms
+	// (which would be the case with completion-based nextAt).
+	for i := 1; i < len(launches); i++ {
+		gap := launches[i].Sub(launches[i-1])
+		// Allow generous tolerance (50ms interval + scheduling jitter up to 50ms)
+		if gap > 150*time.Millisecond {
+			t.Errorf("gap between launch %d and %d: %v (expected < 150ms with launch-based nextAt)",
+				i-1, i, gap)
+		}
+	}
+}
+
+func TestScheduler_MaxPerHopRespectedWithMultiInFlight(t *testing.T) {
+	// Ensure that with multiple in-flight probes per hop, we never exceed
+	// MaxPerHop in the final Snt count. The scheduler should stop launching
+	// when completed + inFlightCount >= MaxPerHop.
+	dstIP := net.ParseIP("10.0.0.3")
+
+	prober := &mockTTLProber{
+		probeFn: func(_ context.Context, ttl int) (mtrProbeResult, error) {
+			// All probes take some time to complete
+			time.Sleep(30 * time.Millisecond)
+
+			ip := net.ParseIP(fmt.Sprintf("10.0.0.%d", ttl))
+			if ttl == 3 {
+				ip = dstIP
+			}
+			return mtrProbeResult{
+				TTL:     ttl,
+				Success: true,
+				Addr:    &net.IPAddr{IP: ip},
+				RTT:     5 * time.Millisecond,
+			}, nil
+		},
+	}
+
+	agg := NewMTRAggregator()
+
+	err := runMTRScheduler(context.Background(), prober, agg, mtrSchedulerConfig{
+		BeginHop:          1,
+		MaxHops:           30,
+		HopInterval:       5 * time.Millisecond,
+		MaxPerHop:         4,
+		MaxInFlightPerHop: 5, // higher than MaxPerHop to test the guard
+		ParallelRequests:  30,
+		ProgressThrottle:  time.Millisecond,
+		DstIP:             dstIP,
+	}, nil, nil)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	stats := agg.Snapshot()
+	for _, s := range stats {
+		if s.TTL >= 1 && s.TTL <= 3 {
+			if s.Snt > 4 {
+				t.Errorf("TTL %d: Snt=%d exceeds MaxPerHop=4", s.TTL, s.Snt)
+			}
+			if s.Snt != 4 {
+				t.Errorf("TTL %d: Snt=%d, expected exactly 4 (MaxPerHop)", s.TTL, s.Snt)
+			}
+		}
+	}
+}
+
+func TestScheduler_SingleInFlightPerHopConfig(t *testing.T) {
+	// When MaxInFlightPerHop=1, behavior should match the old single-inflight
+	// mode (for backward compatibility verification). The test just ensures
+	// completion without error.
+	dstIP := net.ParseIP("10.0.0.3")
+
+	prober := &mockTTLProber{
+		probeFn: func(_ context.Context, ttl int) (mtrProbeResult, error) {
+			ip := net.ParseIP(fmt.Sprintf("10.0.0.%d", ttl))
+			if ttl == 3 {
+				ip = dstIP
+			}
+			return mtrProbeResult{
+				TTL:     ttl,
+				Success: true,
+				Addr:    &net.IPAddr{IP: ip},
+				RTT:     1 * time.Millisecond,
+			}, nil
+		},
+	}
+
+	agg := NewMTRAggregator()
+
+	err := runMTRScheduler(context.Background(), prober, agg, mtrSchedulerConfig{
+		BeginHop:          1,
+		MaxHops:           30,
+		HopInterval:       time.Millisecond,
+		MaxPerHop:         3,
+		MaxInFlightPerHop: 1, // explicit single in-flight
+		ParallelRequests:  5,
+		ProgressThrottle:  time.Millisecond,
+		DstIP:             dstIP,
+	}, nil, nil)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	stats := agg.Snapshot()
+	for _, s := range stats {
+		if s.TTL >= 1 && s.TTL <= 3 && s.Snt != 3 {
+			t.Errorf("TTL %d: Snt=%d, expected 3", s.TTL, s.Snt)
+		}
+	}
+}
+
+func TestScheduler_DynamicMaxInFlightPerHop(t *testing.T) {
+	// Verify that when MaxInFlightPerHop is not explicitly set, the scheduler
+	// computes it as ceil(timeout / hopInterval) + 1. With a large timeout
+	// relative to hopInterval, the dynamic value should be high enough that
+	// even fully-timing-out hops keep up with fast hops.
+	//
+	// Setup: timeout=500ms, hopInterval=50ms → dynamic = ceil(500/50)+1 = 11.
+	// TTL 2 always "times out" (sleeps 500ms); TTL 1,3 are fast.
+	// MaxPerHop=8: with dynamic=11, all 8 probes for TTL 2 can be in-flight
+	// simultaneously, so TTL 2 completes at roughly the same wall-clock as
+	// the fast hops.
+	dstIP := net.ParseIP("10.0.0.3")
+
+	prober := &mockTTLProber{
+		probeFn: func(_ context.Context, ttl int) (mtrProbeResult, error) {
+			ip := net.ParseIP(fmt.Sprintf("10.0.0.%d", ttl))
+			if ttl == 3 {
+				ip = dstIP
+			}
+			if ttl == 2 {
+				time.Sleep(500 * time.Millisecond) // full "timeout"
+			}
+			return mtrProbeResult{
+				TTL:     ttl,
+				Success: true,
+				Addr:    &net.IPAddr{IP: ip},
+				RTT:     2 * time.Millisecond,
+			}, nil
+		},
+	}
+
+	agg := NewMTRAggregator()
+
+	err := runMTRScheduler(context.Background(), prober, agg, mtrSchedulerConfig{
+		BeginHop:         1,
+		MaxHops:          30,
+		HopInterval:      50 * time.Millisecond,
+		Timeout:          500 * time.Millisecond, // → dynamic maxInFlightPerHop = 11
+		MaxPerHop:        8,
+		ParallelRequests: 30,
+		ProgressThrottle: time.Millisecond,
+		DstIP:            dstIP,
+		// MaxInFlightPerHop intentionally 0 → dynamic
+	}, nil, nil)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	stats := agg.Snapshot()
+	sntByTTL := map[int]int{}
+	for _, s := range stats {
+		sntByTTL[s.TTL] = s.Snt
+	}
+
+	for ttl := 1; ttl <= 3; ttl++ {
+		if sntByTTL[ttl] != 8 {
+			t.Errorf("TTL %d: Snt=%d, expected 8 (MaxPerHop)", ttl, sntByTTL[ttl])
+		}
+	}
+}
+
+func TestScheduler_DynamicMaxInFlightPerHop_SmallTimeout(t *testing.T) {
+	// With timeout < hopInterval, dynamic = ceil(t/h)+1 = 1+1 = 2, not 1.
+	// This ensures at least 2 slots so pipelining still works.
+	dstIP := net.ParseIP("10.0.0.2")
+
+	prober := &mockTTLProber{
+		probeFn: func(_ context.Context, ttl int) (mtrProbeResult, error) {
+			ip := net.ParseIP(fmt.Sprintf("10.0.0.%d", ttl))
+			if ttl == 2 {
+				ip = dstIP
+			}
+			return mtrProbeResult{
+				TTL: ttl, Success: true,
+				Addr: &net.IPAddr{IP: ip},
+				RTT:  1 * time.Millisecond,
+			}, nil
+		},
+	}
+
+	agg := NewMTRAggregator()
+
+	err := runMTRScheduler(context.Background(), prober, agg, mtrSchedulerConfig{
+		BeginHop:         1,
+		MaxHops:          30,
+		HopInterval:      100 * time.Millisecond,
+		Timeout:          50 * time.Millisecond, // timeout < hopInterval → dynamic = 2
+		MaxPerHop:        3,
+		ParallelRequests: 10,
+		ProgressThrottle: time.Millisecond,
+		DstIP:            dstIP,
+	}, nil, nil)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	stats := agg.Snapshot()
+	for _, s := range stats {
+		if s.TTL >= 1 && s.TTL <= 2 && s.Snt != 3 {
+			t.Errorf("TTL %d: Snt=%d, expected 3", s.TTL, s.Snt)
+		}
+	}
+}

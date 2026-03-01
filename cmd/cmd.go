@@ -188,7 +188,61 @@ func sanitizeUsagePositionalArgs(usage string) string {
 	// argparse renders the positional as "--TARGET" in the description list;
 	// strip the leading "--" so it reads as a plain positional placeholder.
 	usage = strings.ReplaceAll(usage, "--TARGET", "TARGET")
+	// Fix the description column alignment for the TARGET entry.
+	// argparse gives positional args minimal spacing ("      TARGET  desc"), but named
+	// flags are padded to a consistent description column ("      --name              desc").
+	// Detect that column from any named-flag line and re-pad the TARGET line to match.
+	usage = fixPositionalAlignment(usage)
 	return usage
+}
+
+// fixPositionalAlignment detects the description column used by named flags in the
+// argparse help output and re-pads the TARGET positional entry to match it.
+func fixPositionalAlignment(usage string) string {
+	// Scan flag lines to find where descriptions start.
+	// A flag line looks like "  -X  --name<spaces>Description" or "      --name<spaces>Description".
+	// We find the column of the first non-space character after the flag name (past position 8).
+	descCol := 0
+	for _, line := range strings.Split(usage, "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		if !strings.HasPrefix(trimmed, "-") || strings.Contains(line, "TARGET") {
+			continue
+		}
+		inGap := false
+		for i := 8; i < len(line); i++ {
+			if line[i] == ' ' {
+				inGap = true
+			} else if inGap {
+				descCol = i
+				break
+			}
+		}
+		if descCol > 0 {
+			break
+		}
+	}
+	if descCol == 0 {
+		return usage
+	}
+	// Find the TARGET description entry: "\n      TARGET  <description>"
+	const namePrefix = "      TARGET"
+	marker := "\n" + namePrefix
+	idx := strings.Index(usage, marker)
+	if idx < 0 {
+		return usage
+	}
+	// afterName points to the character right after "      TARGET" on that line.
+	afterName := idx + 1 + len(namePrefix)
+	// Skip the existing (minimal) spacing.
+	end := afterName
+	for end < len(usage) && usage[end] == ' ' {
+		end++
+	}
+	needed := descCol - len(namePrefix)
+	if needed <= 0 {
+		return usage
+	}
+	return usage[:afterName] + strings.Repeat(" ", needed) + usage[end:]
 }
 
 func Execute() {
@@ -237,12 +291,10 @@ func Execute() {
 	ttlInterval := parser.Int("i", "ttl-time", &argparse.Options{Default: defaultTracerouteTTLIntervalMs, Help: "Interval [ms] between TTL groups in normal traceroute (default: 300ms). In MTR mode (--mtr/-r/-w, including --raw), sets per-hop probe interval: how long between successive probes to the same hop (default: 1000ms when omitted)"})
 	timeout := parser.Int("", "timeout", &argparse.Options{Default: 1000, Help: "The number of [milliseconds] to keep probe sockets open before giving up on the connection"})
 	packetSize := parser.Int("", "psize", &argparse.Options{Default: 52, Help: "Set the payload size"})
-	str := parser.StringPositional(&argparse.Options{Help: "IP Address or domain name"})
 	dot := parser.Selector("", "dot-server", []string{"dnssb", "aliyun", "dnspod", "google", "cloudflare"}, &argparse.Options{
 		Help: "Use DoT Server for DNS Parse [dnssb, aliyun, dnspod, google, cloudflare]"})
 	lang := parser.Selector("g", "language", []string{"en", "cn"}, &argparse.Options{Default: "cn",
 		Help: "Choose the language for displaying [en, cn]"})
-	file := parser.String("", "file", &argparse.Options{Help: "Read IP Address or domain name from file"})
 	noColor := parser.Flag("C", "no-color", &argparse.Options{Help: "Disable Colorful Output"})
 	from := parser.String("", "from", &argparse.Options{Help: "Run traceroute via Globalping (https://globalping.io/network) from a specified location. The location field accepts continents, countries, regions, cities, ASNs, ISPs, or cloud regions."})
 	mtrMode := parser.Flag("t", "mtr", &argparse.Options{Help: "Enable MTR (My Traceroute) continuous probing mode"})
@@ -250,6 +302,8 @@ func Execute() {
 	wideMode := parser.Flag("w", "wide", &argparse.Options{Help: "MTR wide report mode (implies --mtr --report); alone equals --mtr --report --wide"})
 	showIPs := parser.Flag("", "show-ips", &argparse.Options{Help: "MTR only: display both PTR hostnames and numeric IPs (PTR first, IP in parentheses)"})
 	ipInfoMode := parser.Int("y", "ipinfo", &argparse.Options{Default: 0, Help: "Set initial MTR TUI host info mode (0-4). TUI only; ignored in --report/--raw. 0:IP/PTR 1:ASN 2:City 3:Owner 4:Full"})
+	file := parser.String("", "file", &argparse.Options{Help: "Read IP Address or domain name from file"})
+	str := parser.StringPositional(&argparse.Options{Help: "Trace target: IPv4 address (e.g. 8.8.8.8), IPv6 address (e.g. 2001:db8::1), domain name (e.g. example.com), or URL (e.g. https://example.com)"})
 
 	err := parser.Parse(os.Args)
 	if err != nil {

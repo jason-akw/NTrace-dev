@@ -131,6 +131,7 @@ func runMTRPerHop(ctx context.Context, method Method, baseConfig Config, opts MT
 		BeginHop:         baseConfig.BeginHop,
 		MaxHops:          baseConfig.MaxHops,
 		HopInterval:      opts.HopInterval,
+		Timeout:          baseConfig.Timeout,
 		MaxPerHop:        opts.MaxPerHop,
 		ParallelRequests: baseConfig.ParallelRequests,
 		ProgressThrottle: opts.ProgressThrottle,

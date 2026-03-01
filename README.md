@@ -472,7 +472,7 @@ All NextTrace IP geolocation `API DEMO` can refer to [here](https://github.com/n
 ### For full usage list, please refer to the usage menu
 
 ```shell
-usage: nexttrace [-h|--help] [--init] [-4|--ipv4] [-6|--ipv6] [-T|--tcp]
+Usage: nexttrace [-h|--help] [--init] [-4|--ipv4] [-6|--ipv6] [-T|--tcp]
                  [-U|--udp] [-F|--fast-trace] [-p|--port <integer>]
                  [--icmp-mode <integer>] [-q|--queries <integer>]
                  [--max-attempts <integer>] [--parallel-requests <integer>]
@@ -485,13 +485,11 @@ usage: nexttrace [-h|--help] [--init] [-4|--ipv4] [-6|--ipv6] [-T|--tcp]
                  [-s|--source "<value>"] [--source-port <integer>] [-D|--dev
                  "<value>"] [--listen "<value>"] [--deploy] [-z|--send-time
                  <integer>] [-i|--ttl-time <integer>] [--timeout <integer>]
-                 [--psize <integer>] [_positionalArg_nexttrace_37 "<value>"]
-                 [--dot-server (dnssb|aliyun|dnspod|google|cloudflare)]
-                 [-g|--language (en|cn)] [--file "<value>"] [-C|--no-color]
-                 [--from "<value>"] [-t|--mtr] [-r|--report] [-w|--wide]
-                 [--show-ips] [-y|--ipinfo <integer>]
-
-                 An open source visual route tracking CLI tool
+                 [--psize <integer>] [--dot-server
+                 (dnssb|aliyun|dnspod|google|cloudflare)] [-g|--language
+                 (en|cn)] [-C|--no-color] [--from "<value>"] [-t|--mtr]
+                 [-r|--report] [-w|--wide] [--show-ips] [-y|--ipinfo <integer>]
+                 [--file "<value>"] [TARGET "<value>"]
 
 Arguments:
 
@@ -513,6 +511,7 @@ Arguments:
   -q  --queries                      Set the number of latency samples to
                                      display for each hop. Default: 3
       --max-attempts                 Set the maximum number of probe packets
+
                                      per hop (instead of a fixed auto value)
       --parallel-requests            Set ParallelRequests number. It should be
                                      1 when there is a multi-routing. Default:
@@ -571,12 +570,10 @@ Arguments:
                                      sockets open before giving up on the
                                      connection. Default: 1000
       --psize                        Set the payload size. Default: 52
-      --_positionalArg_nexttrace_37  IP Address or domain name
       --dot-server                   Use DoT Server for DNS Parse [dnssb,
                                      aliyun, dnspod, google, cloudflare]
   -g  --language                     Choose the language for displaying [en,
                                      cn]. Default: cn
-      --file                         Read IP Address or domain name from file
   -C  --no-color                     Disable Colorful Output
       --from                         Run traceroute via Globalping
                                      (https://globalping.io/network) from a
@@ -596,6 +593,11 @@ Arguments:
                                      TUI only; ignored in --report/--raw.
                                      0:IP/PTR 1:ASN 2:City 3:Owner 4:Full.
                                      Default: 0
+      --file                         Read IP Address or domain name from file
+      TARGET                         Trace target: IPv4 address (e.g. 8.8.8.8),
+                                     IPv6 address (e.g. 2001:db8::1), domain
+                                     name (e.g. example.com), or URL (e.g.
+                                     https://example.com)
 ```
 
 ## Project screenshot

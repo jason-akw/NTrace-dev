@@ -38,16 +38,18 @@ type mtrTTLProber interface {
 
 // mtrSchedulerConfig configures the per-hop scheduler.
 type mtrSchedulerConfig struct {
-	BeginHop         int
-	MaxHops          int
-	HopInterval      time.Duration // delay between successive probes to the same TTL
-	MaxPerHop        int           // 0 = unlimited (run until ctx cancelled)
-	MaxConsecErrors  int           // per-TTL consecutive error limit; 0 → default 10
-	ParallelRequests int
-	ProgressThrottle time.Duration
-	FillGeo          bool
-	BaseConfig       Config // used for geo/RDNS lookup
-	DstIP            net.IP
+	BeginHop          int
+	MaxHops           int
+	HopInterval       time.Duration // delay between successive probes to the same TTL
+	Timeout           time.Duration // per-probe timeout; used to compute default MaxInFlightPerHop
+	MaxPerHop         int           // 0 = unlimited (run until ctx cancelled)
+	MaxConsecErrors   int           // per-TTL consecutive error limit; 0 → default 10
+	MaxInFlightPerHop int           // max concurrent probes per TTL; 0 → ceil(Timeout/HopInterval)+1
+	ParallelRequests  int
+	ProgressThrottle  time.Duration
+	FillGeo           bool
+	BaseConfig        Config // used for geo/RDNS lookup
+	DstIP             net.IP
 
 	IsPaused         func() bool
 	IsResetRequested func() bool
@@ -56,8 +58,7 @@ type mtrSchedulerConfig struct {
 // mtrHopState tracks per-TTL scheduling state.
 type mtrHopState struct {
 	completed       int
-	inFlight        bool
-	launchGen       uint64
+	inFlightCount   int
 	nextAt          time.Time
 	disabled        bool
 	consecutiveErrs int
@@ -116,6 +117,22 @@ func runMTRScheduler(
 		maxConsecErrors = 10
 	}
 
+	maxInFlightPerHop := cfg.MaxInFlightPerHop
+	if maxInFlightPerHop <= 0 {
+		// Compute dynamic default: ceil(timeout / hopInterval) + 1.
+		// This ensures enough concurrent slots so that even if all
+		// in-flight probes time out, the scheduler can still launch
+		// new probes at the configured hopInterval rate.
+		timeout := cfg.Timeout
+		if timeout <= 0 {
+			timeout = 2 * time.Second
+		}
+		maxInFlightPerHop = int((timeout+hopInterval-1)/hopInterval) + 1
+		if maxInFlightPerHop < 1 {
+			maxInFlightPerHop = 1
+		}
+	}
+
 	if beginHop > maxHops {
 		return fmt.Errorf("mtr: beginHop (%d) > maxHops (%d)", beginHop, maxHops)
 	}
@@ -169,8 +186,10 @@ func runMTRScheduler(
 	}
 
 	launchProbe := func(ttl int, gen uint64) {
-		states[ttl].inFlight = true
-		states[ttl].launchGen = gen
+		states[ttl].inFlightCount++
+		// Schedule nextAt based on LAUNCH time so that the scheduler doesn't
+		// wait for slow (timed-out) probes before dispatching the next one.
+		states[ttl].nextAt = time.Now().Add(hopInterval)
 		inFlight++
 		go func() {
 			result, err := prober.ProbeTTL(ctx, ttl)
@@ -195,7 +214,7 @@ func runMTRScheduler(
 			return
 		}
 
-		states[originTTL].inFlight = false
+		states[originTTL].inFlightCount--
 
 		// Once knownFinalTTL is determined, all probes from disabled higher TTLs
 		// are discarded. Do NOT fold destination replies into finalTTL; folding
@@ -215,7 +234,6 @@ func runMTRScheduler(
 				// Budget exhausted: count as a completed timeout probe.
 				states[originTTL].consecutiveErrs = 0
 				states[originTTL].completed++
-				states[originTTL].nextAt = cp.doneAt.Add(hopInterval)
 
 				singleRes := &Result{Hops: make([][]Hop, maxHops)}
 				hop := Hop{TTL: originTTL, Error: errHopLimitTimeout}
@@ -233,8 +251,7 @@ func runMTRScheduler(
 				maybeSnapshot(false)
 				return
 			}
-			// Below budget: reschedule after interval.
-			states[originTTL].nextAt = cp.doneAt.Add(hopInterval)
+			// Below budget: no nextAt update needed — nextAt was set at launch time.
 			return
 		}
 
@@ -271,17 +288,14 @@ func runMTRScheduler(
 
 		// Check MaxPerHop cap.
 		// In-flight probes launched before the cap was reached may return after
-		// migration pushed completed to MaxPerHop — discard them.
+		// completed reached MaxPerHop — discard them.
 		if cfg.MaxPerHop > 0 && states[originTTL].completed >= cfg.MaxPerHop {
-			// Still update scheduling state so the origin TTL doesn't stall.
 			states[originTTL].consecutiveErrs = 0
-			states[originTTL].nextAt = cp.doneAt.Add(hopInterval)
 			return
 		}
 
 		// Update scheduling state for origin TTL
 		states[originTTL].consecutiveErrs = 0
-		states[originTTL].nextAt = cp.doneAt.Add(hopInterval)
 		states[originTTL].completed++
 
 		// Feed single-probe result to aggregator
@@ -331,10 +345,10 @@ func runMTRScheduler(
 				break
 			}
 			s := &states[ttl]
-			if s.disabled || s.inFlight {
+			if s.disabled || s.inFlightCount >= maxInFlightPerHop {
 				continue
 			}
-			if cfg.MaxPerHop > 0 && s.completed >= cfg.MaxPerHop {
+			if cfg.MaxPerHop > 0 && s.completed+s.inFlightCount >= cfg.MaxPerHop {
 				continue
 			}
 			if !s.nextAt.IsZero() && now.Before(s.nextAt) {
@@ -354,7 +368,7 @@ func runMTRScheduler(
 			if s.disabled {
 				continue
 			}
-			if s.completed < cfg.MaxPerHop || s.inFlight {
+			if s.completed < cfg.MaxPerHop || s.inFlightCount > 0 {
 				return false
 			}
 		}
