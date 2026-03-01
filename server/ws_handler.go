@@ -302,11 +302,15 @@ func runSingleTrace(session *wsTraceSession, setup *traceExecution) {
 }
 
 func runMTRTrace(session *wsTraceSession, setup *traceExecution) {
-	interval := time.Duration(setup.Req.IntervalMs) * time.Millisecond
-	if interval <= 0 {
-		interval = 2 * time.Second
+	// Prefer dedicated HopIntervalMs; fall back to legacy IntervalMs; default 1s.
+	hopInterval := time.Duration(setup.Req.HopIntervalMs) * time.Millisecond
+	if hopInterval <= 0 {
+		hopInterval = time.Duration(setup.Req.IntervalMs) * time.Millisecond
 	}
-	maxRounds := setup.Req.MaxRounds
+	if hopInterval <= 0 {
+		hopInterval = 1000 * time.Millisecond
+	}
+	maxPerHop := setup.Req.MaxRounds // 0 = unlimited
 
 	iteration := 0
 	ctx, cancel := context.WithCancel(context.Background())
@@ -330,8 +334,8 @@ func runMTRTrace(session *wsTraceSession, setup *traceExecution) {
 	}()
 
 	err := executeMTRRaw(ctx, session, setup, trace.MTRRawOptions{
-		Interval:  interval,
-		MaxRounds: maxRounds,
+		HopInterval: hopInterval,
+		MaxPerHop:   maxPerHop,
 	}, func(rec trace.MTRRawRecord) {
 		if rec.Iteration > iteration {
 			iteration = rec.Iteration
@@ -353,53 +357,36 @@ func runMTRTrace(session *wsTraceSession, setup *traceExecution) {
 
 func executeMTRRaw(ctx context.Context, session *wsTraceSession, setup *traceExecution, opts trace.MTRRawOptions, onRecord trace.MTRRawOnRecord) error {
 	config := setup.Config
-	log.Printf("[deploy] (ws) starting MTR raw trace target=%s resolved=%s method=%s lang=%s maxHops=%d interval=%s maxRounds=%d",
-		sanitizeLogParam(setup.Target), setup.IP.String(), string(setup.Method), sanitizeLogParam(config.Lang), config.MaxHops, opts.Interval, opts.MaxRounds)
 
 	if session.closed.Load() {
 		return nil
 	}
 
+	if opts.HopInterval > 0 {
+		// Per-hop scheduling: briefly lock to set up globals (SrcDev, SrcPort, etc.)
+		// that the ICMP engine / fallback prober reads during initialization,
+		// then release so other requests are not blocked for the lifetime of
+		// the (potentially hours-long) MTR session.
+		log.Printf("[deploy] (ws) starting MTR per-hop trace target=%s resolved=%s method=%s lang=%s maxHops=%d hopInterval=%s maxPerHop=%d",
+			sanitizeLogParam(setup.Target), setup.IP.String(), string(setup.Method), sanitizeLogParam(config.Lang), config.MaxHops, opts.HopInterval, opts.MaxPerHop)
+
+		traceMu.Lock()
+		setupTraceGlobals(setup)
+		traceMu.Unlock()
+
+		return trace.RunMTRRaw(ctx, setup.Method, config, opts, onRecord)
+	}
+
+	// Legacy round-based path: inject RunRound with per-round locking.
+	log.Printf("[deploy] (ws) starting MTR round-based trace target=%s resolved=%s method=%s lang=%s maxHops=%d interval=%s maxRounds=%d",
+		sanitizeLogParam(setup.Target), setup.IP.String(), string(setup.Method), sanitizeLogParam(config.Lang), config.MaxHops, opts.Interval, opts.MaxRounds)
+
 	opts.RunRound = func(method trace.Method, cfg trace.Config) (*trace.Result, error) {
 		traceMu.Lock()
 		defer traceMu.Unlock()
 
-		prevSrcPort := util.SrcPort
-		prevDstIP := util.DstIP
-		prevSrcDev := util.SrcDev
-		prevDisableMPLS := util.DisableMPLS
-		prevPowProvider := util.PowProviderParam
-		defer func() {
-			util.SrcPort = prevSrcPort
-			util.DstIP = prevDstIP
-			util.SrcDev = prevSrcDev
-			util.DisableMPLS = prevDisableMPLS
-			util.PowProviderParam = prevPowProvider
-		}()
-
-		if setup.NeedsLeoWS {
-			if setup.PowProvider != "" {
-				log.Printf("[deploy] (ws) LeoMoeAPI using custom PoW provider=%s", sanitizeLogParam(setup.PowProvider))
-			} else {
-				log.Printf("[deploy] (ws) LeoMoeAPI using default PoW provider")
-			}
-			util.PowProviderParam = setup.PowProvider
-			ensureLeoMoeConnection()
-		} else if setup.PowProvider != "" {
-			log.Printf("[deploy] (ws) overriding PoW provider=%s", sanitizeLogParam(setup.PowProvider))
-			util.PowProviderParam = setup.PowProvider
-		} else {
-			util.PowProviderParam = ""
-		}
-
-		util.SrcPort = setup.Req.SourcePort
-		util.DstIP = setup.IP.String()
-		if setup.Req.SourceDevice != "" {
-			util.SrcDev = setup.Req.SourceDevice
-		} else {
-			util.SrcDev = ""
-		}
-		util.DisableMPLS = setup.Req.DisableMPLS
+		setupTraceGlobals(setup)
+		defer restoreTraceGlobals(setup)
 
 		return trace.Traceroute(method, cfg)
 	}
@@ -407,23 +394,9 @@ func executeMTRRaw(ctx context.Context, session *wsTraceSession, setup *traceExe
 	return trace.RunMTRRaw(ctx, setup.Method, config, opts, onRecord)
 }
 
-func executeTrace(session *wsTraceSession, setup *traceExecution, configure func(*trace.Config)) (*trace.Result, time.Duration, error) {
-	traceMu.Lock()
-	defer traceMu.Unlock()
-
-	prevSrcPort := util.SrcPort
-	prevDstIP := util.DstIP
-	prevSrcDev := util.SrcDev
-	prevDisableMPLS := util.DisableMPLS
-	prevPowProvider := util.PowProviderParam
-	defer func() {
-		util.SrcPort = prevSrcPort
-		util.DstIP = prevDstIP
-		util.SrcDev = prevSrcDev
-		util.DisableMPLS = prevDisableMPLS
-		util.PowProviderParam = prevPowProvider
-	}()
-
+// setupTraceGlobals sets the global variables required by the trace engine.
+// Caller must hold traceMu.
+func setupTraceGlobals(setup *traceExecution) {
 	if setup.NeedsLeoWS {
 		if setup.PowProvider != "" {
 			log.Printf("[deploy] (ws) LeoMoeAPI using custom PoW provider=%s", sanitizeLogParam(setup.PowProvider))
@@ -447,6 +420,22 @@ func executeTrace(session *wsTraceSession, setup *traceExecution, configure func
 		util.SrcDev = ""
 	}
 	util.DisableMPLS = setup.Req.DisableMPLS
+}
+
+// restoreTraceGlobals is a no-op placeholder. In deploy mode the server owns
+// the global state exclusively, so restoring to "previous" values is not
+// meaningful. The function is kept for documentation and symmetry with
+// setupTraceGlobals.
+func restoreTraceGlobals(_ *traceExecution) {
+	// In a single-tenant deploy server globals are reset at next request.
+	// No restore needed.
+}
+
+func executeTrace(session *wsTraceSession, setup *traceExecution, configure func(*trace.Config)) (*trace.Result, time.Duration, error) {
+	traceMu.Lock()
+	defer traceMu.Unlock()
+
+	setupTraceGlobals(setup)
 
 	config := setup.Config
 	if configure != nil {

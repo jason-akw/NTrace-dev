@@ -51,6 +51,7 @@ let mtrRenderScheduled = false;
 let mtrRenderTimer = null;
 let mtrRenderRAF = null;
 let mtrRenderLastAt = 0;
+let mtrRawKnownFinalTTL = Infinity;
 
 const uiText = {
   cn: {
@@ -271,6 +272,7 @@ function clearResult(resetState = false) {
     mtrRawAggStore = new Map();
     mtrRawOrderSeq = 0;
     mtrRenderLastAt = 0;
+    mtrRawKnownFinalTTL = Infinity;
     stopBtn.classList.add('hidden');
     stopBtn.disabled = true;
   }
@@ -1108,6 +1110,28 @@ function ingestMTRRawRecord(rec) {
   if (!rec || !Number.isFinite(Number(rec.ttl))) {
     return;
   }
+  const ttl = Number(rec.ttl);
+
+  // --- knownFinalTTL truncation (mirrors server-side logic) ---
+  // Drop probes beyond the known destination TTL.
+  if (ttl > mtrRawKnownFinalTTL) {
+    return;
+  }
+  // Detect destination: success + IP matches resolved target.
+  const resolvedIP = latestSummary && latestSummary.resolved_ip
+    ? String(latestSummary.resolved_ip).trim() : '';
+  const recIP = rec.ip ? String(rec.ip).trim() : '';
+  if (rec.success && recIP && resolvedIP && recIP === resolvedIP && ttl < mtrRawKnownFinalTTL) {
+    mtrRawKnownFinalTTL = ttl;
+    // Prune stale entries whose TTL exceeds the new boundary.
+    for (const [k, v] of mtrRawAggStore) {
+      if (v.ttl > mtrRawKnownFinalTTL) {
+        mtrRawAggStore.delete(k);
+      }
+    }
+  }
+  // --- end truncation ---
+
   const key = mtrRawKey(rec);
   let row = mtrRawAggStore.get(key);
   if (!row) {

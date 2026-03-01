@@ -108,6 +108,7 @@ func runMTRRawPerHop(ctx context.Context, method Method, cfg Config, opts MTRRaw
 		BeginHop:         roundCfg.BeginHop,
 		MaxHops:          roundCfg.MaxHops,
 		HopInterval:      opts.HopInterval,
+		Timeout:          roundCfg.Timeout,
 		MaxPerHop:        opts.MaxPerHop,
 		ParallelRequests: roundCfg.ParallelRequests,
 		FillGeo:          true,

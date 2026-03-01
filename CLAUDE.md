@@ -171,7 +171,7 @@
 
 ## Web Console / WebSocket（server/）
 
-### WS 架构（`server/ws_handler.go`，~449 行）
+### WS 架构（`server/ws_handler.go`，~451 行）
 
 - **异步写模型**：`wsTraceSession` 使用 `sendCh`（buffered channel，1024）+ `writeLoop` goroutine。
   - 调用方通过 `send(envelope)` 非阻塞投递；channel 满时返回 `errWSSlowConsumer`。
@@ -182,6 +182,20 @@
   - 两者均幂等（`closeOnce` / `finishOnce`）。
 - **可测试性**：`wsConn` 接口 + `fakeWSConn` mock（`server/ws_handler_test.go`）。
 - **常量**：`wsSendQueueSize=1024`，`wsWriteTimeout=5s`。
+
+### Web MTR 调度模式（重要变更）
+
+- **已从 round-based 迁移到 per-hop 调度**。
+- `runMTRTrace()`：
+  - 优先读 `HopIntervalMs`，fallback `IntervalMs`，再缺省 1000ms。
+  - `MaxRounds` → `MaxPerHop`（0 = 无限运行直到客户端断开）。
+  - 不再使用 legacy round-based 的 `Interval` / `RunRound`。
+- `executeMTRRaw()` 两路分支：
+  - `HopInterval > 0`：per-hop 模式，**短暂加锁** `setupTraceGlobals` 后立即释放 `traceMu`，不阻塞其他请求。
+  - fallback：legacy round-based 模式（保留兼容），`RunRound` 回调内 per-round 锁定。
+- `setupTraceGlobals(setup)` / `restoreTraceGlobals(setup)`：统一全局变量设置逻辑，`executeTrace` 也已复用。
+- `traceRequest` 新增 `HopIntervalMs` 字段（`json:"hop_interval_ms"`），与 `IntervalMs` 解耦。
+- 前端（`app.js`、`mtr_agg.js`）无需改动——已有客户端聚合，与调度模型无关。
 
 ### 前端渲染节流（`server/web/assets/app.js`）
 

@@ -71,6 +71,7 @@ type traceRequest struct {
 	DataProviderAlias string `json:"data_provider_alias"`
 	Mode              string `json:"mode"`
 	IntervalMs        int    `json:"interval_ms"`
+	HopIntervalMs     int    `json:"hop_interval_ms"`
 	MaxRounds         int    `json:"max_rounds"`
 }
 
